@@ -1,1 +1,4 @@
 .zig-cache
+.py
+inputs
+test-inputs

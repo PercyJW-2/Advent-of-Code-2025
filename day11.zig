@@ -9,75 +9,114 @@ const GraphNode = struct {
     next_nodes: std.ArrayList([]const u8),
 };
 
-const Graph = struct {
-    nodes: std.ArrayList(GraphNode) = .empty,
-    fn get_connections_of(self: *const Graph, node_to_search: []const u8) ?*const std.ArrayList([]const u8) {
-        for (self.nodes.items) |node| {
-            if (std.mem.eql(u8, node.name, node_to_search)) {
-                return &node.next_nodes;
-            }
-        }
-        print("Could not Find Value: {s}\n", .{node_to_search});
-        return null;
-    }
-};
-
-pub fn ReverseTree(comptime Child: type) type {
+pub fn MemGraph() type {
+    const Child = []const u8;
     return struct {
         const Self = @This();
         pub const Node = struct {
             data: Child,
-            previous: ?*Node,
-            leaf: bool = true,
+            next: std.ArrayList(*Node) = .empty,
+            path_count: usize = 0,
+        };
+        const CacheContext = struct {
+            pub fn hash(ctx: @This(), key: struct { *Node, bool, bool }) u64 {
+                _ = ctx;
+                var h = std.hash.Fnv1a_64.init();
+                h.update(key.@"0".data);
+                const tmp: [2]u8 = .{ @as(u8, @intFromBool(key.@"1")), @as(u8, @intFromBool(key.@"2")) };
+                h.update(&tmp);
+                const final_hash = h.final();
+                //print("Hash: {d}\n", .{final_hash});
+                return final_hash;
+            }
+            pub fn eql(ctx: @This(), a: struct { *Node, bool, bool }, b: struct { *Node, bool, bool }) bool {
+                _ = ctx;
+                return std.mem.eql(u8, a.@"0".data, b.@"0".data) and
+                    a.@"1" == b.@"1" and
+                    a.@"2" == b.@"2";
+            }
         };
         gpa: std.mem.Allocator,
         nodes: std.ArrayList(*Node),
-        cmp_fn: *const fn (Child, Child) bool,
-
-        pub fn init(gpa: std.mem.Allocator, comp_fcn: fn (Child, Child) bool) Self {
+        cache_map: std.HashMap(struct { *Node, bool, bool }, usize, CacheContext, 80),
+        pub fn init(gpa: std.mem.Allocator) Self {
             return Self{
                 .gpa = gpa,
                 .nodes = .empty,
-                .cmp_fn = comp_fcn,
+                .cache_map = .init(gpa),
             };
         }
         pub fn deinit(self: *Self) void {
             for (self.nodes.items) |value| {
+                value.next.deinit(self.gpa);
                 self.gpa.destroy(value);
             }
             self.nodes.deinit(self.gpa);
+            self.cache_map.deinit();
         }
-        pub fn insert(self: *Self, prev_node: ?*Node, new_value: Child) !*Node {
-            const new_node = try self.gpa.create(Node);
-            new_node.* = .{ .data = new_value, .previous = prev_node };
-            if (prev_node == null and self.nodes.items.len != 0) {
-                self.gpa.destroy(new_node);
-                return error.NoParentNodeProvided;
+        pub fn insert(self: *Self, new_value: Child, connections: ?[]Child) !*Node {
+            var new_node: *Node = undefined;
+            if (self.find_node(new_value)) |node| {
+                new_node = node;
+            } else {
+                new_node = try self.gpa.create(Node);
+                new_node.* = .{ .data = try self.gpa.dupe(u8, new_value) };
+                try self.nodes.append(self.gpa, new_node);
             }
-            if (prev_node != null) {
-                prev_node.?.leaf = false;
+            if (connections == null) {
+                return new_node;
             }
-            try self.nodes.append(self.gpa, new_node);
+            for (connections.?) |connection| {
+                if (self.find_node(connection)) |node_connection| {
+                    try new_node.next.append(self.gpa, node_connection);
+                } else {
+                    const node_connection = try self.insert(connection, null);
+                    try new_node.next.append(self.gpa, node_connection);
+                }
+            }
             return new_node;
         }
-        pub fn count_leafs_with_data(self: *const Self, data: Child) usize {
-            var counter: usize = 0;
+        pub fn find_node(self: *Self, value: Child) ?*Node {
             for (self.nodes.items) |node| {
-                if (node.leaf and self.cmp_fn(node.data, data)) {
-                    counter += 1;
+                if (std.mem.eql(u8, node.data, value)) {
+                    return node;
                 }
             }
-            return counter;
+            return null;
         }
-        pub fn find_value_in_branch(self: *const Self, start_node: *const Node, value: Child) bool {
-            var current_node = start_node;
-            while (current_node.previous) |node| {
-                if (self.cmp_fn(current_node.data, value)) {
-                    return true;
-                }
-                current_node = node;
+        pub fn recursive_path_count(self: *Self, current_node: *Node, visited_dac: bool, visited_fft: bool) !usize {
+            if (self.cache_map.get(.{ current_node, visited_dac, visited_fft })) |path_count| {
+                //print("Cache Hit!\n", .{});
+                return path_count;
             }
-            return false;
+            var fft = visited_fft;
+            var dac = visited_fft;
+            if (std.mem.eql(u8, current_node.data, "out")) {
+                var result: usize = 0;
+                if (visited_dac or visited_fft) {
+                    print("Found End\n", .{});
+                    result = 1;
+                } else {
+                    print("No End\n", .{});
+                    result = 0;
+                }
+                try self.cache_map.put(.{ current_node, visited_dac, visited_fft }, result);
+                return result;
+            } else if (std.mem.eql(u8, current_node.data, "fft")) {
+                fft = true;
+            } else if (std.mem.eql(u8, current_node.data, "dac")) {
+                dac = true;
+            }
+            var count: usize = 0;
+            for (current_node.next.items) |value| {
+                count += try self.recursive_path_count(value, dac, fft);
+            }
+            try self.cache_map.put(.{ current_node, dac, fft }, count);
+            return count;
+        }
+        pub fn reset_cache(self: *Self) !void {
+            self.cache_map.deinit();
+            self.cache_map = .init(self.gpa);
         }
     };
 }
@@ -106,76 +145,26 @@ pub fn main() !void {
         }
         try nodes.append(allocator, .{ .name = try allocator.dupe(u8, node_name), .next_nodes = connections });
     }
+    try nodes.append(allocator, .{ .name = "out", .next_nodes = .empty });
 
-    const node_graph = Graph{ .nodes = nodes };
-
-    const str_eql_fcn = struct {
-        pub fn eql(fst: []const u8, snd: []const u8) bool {
-            return std.mem.eql(u8, fst, snd);
-        }
-    }.eql;
-
-    const path_count_fn = struct {
-        pub fn get_path_count(start: []const u8, end: []const u8, node_graph_local: *const Graph) !usize {
-            var next_node_to_check = Queue(*ReverseTree([]const u8).Node).init(allocator);
-            defer next_node_to_check.deinit();
-
-            var path_tree = ReverseTree([]const u8).init(allocator, str_eql_fcn);
-            defer path_tree.deinit();
-
-            const node_ptr = try path_tree.insert(null, start);
-            try next_node_to_check.enqueue(node_ptr);
-
-            while (next_node_to_check.dequeue()) |node| {
-                if (str_eql_fcn(node.data, end)) {
-                    continue;
-                }
-                //print("{s}\n", .{node.data});
-                const g_node = node_graph_local.get_connections_of(node.data).?;
-                for (g_node.items) |next_node| {
-                    if (path_tree.find_value_in_branch(node, next_node)) {
-                        continue;
-                    }
-                    //print("Next node: {s}\n", .{next_node});
-                    const next_node_ptr = try path_tree.insert(node, next_node);
-                    try next_node_to_check.enqueue(next_node_ptr);
-                }
-            }
-
-            const path_count = path_tree.count_leafs_with_data(end);
-            return path_count;
-        }
-    }.get_path_count;
-    {
-        const start = "you";
-        const end = "out";
-
-        const path_count = try path_count_fn(start, end, &node_graph);
-        print("Possible Paths {d}\n", .{path_count});
+    var mem_graph = MemGraph().init(allocator);
+    for (nodes.items) |g_node| {
+        _ = try mem_graph.insert(g_node.name, g_node.next_nodes.items);
     }
 
     {
+        const start = "you";
+        const start_node = mem_graph.find_node(start).?;
+
+        const path_count = try mem_graph.recursive_path_count(start_node, true, true);
+        print("Possible Paths {d}\n", .{path_count});
+    }
+    try mem_graph.reset_cache();
+    {
         const start = "svr";
-        const end = "out";
-        const checkpoint_1 = "fft";
-        const checkpoint_2 = "dac";
+        const start_node = mem_graph.find_node(start).?;
 
-        const start_checkpoint_1 = try path_count_fn(start, checkpoint_1, &node_graph);
-        print("start_checkpoint_1: {d}\n", .{start_checkpoint_1});
-        const start_checkpoint_2 = try path_count_fn(start, checkpoint_2, &node_graph);
-        print("start_checkpoint_2: {d}\n", .{start_checkpoint_2});
-        const checkpoint_1_checkpoint_2 = try path_count_fn(checkpoint_1, checkpoint_2, &node_graph);
-        print("checkpoint_1_checkpoint_2: {d}\n", .{checkpoint_1_checkpoint_2});
-        const checkpoint_2_checkpoint_1 = try path_count_fn(checkpoint_2, checkpoint_1, &node_graph);
-        print("checkpoint_2_checkpoint_1: {d}\n", .{checkpoint_2_checkpoint_1});
-        const checkpoint_1_end = try path_count_fn(checkpoint_1, end, &node_graph);
-        print("checkpoint_1_end: {d}\n", .{checkpoint_1_end});
-        const checkpoint_2_end = try path_count_fn(checkpoint_2, end, &node_graph);
-        print("checkpoint_2_end: {d}\n", .{checkpoint_2_end});
-
-        const path_count =
-            start_checkpoint_1 * checkpoint_1_checkpoint_2 * checkpoint_2_end +
-            start_checkpoint_2 * checkpoint_2_checkpoint_1 * checkpoint_2_end;
+        const path_count = try mem_graph.recursive_path_count(start_node, false, false);
 
         print("Possible Problematic Paths {d}\n", .{path_count});
     }
