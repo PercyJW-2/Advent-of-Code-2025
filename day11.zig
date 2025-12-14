@@ -19,14 +19,13 @@ pub fn MemGraph() type {
             path_count: usize = 0,
         };
         const CacheContext = struct {
-            pub fn hash(ctx: @This(), key: struct { *Node, bool, bool }) u64 {
+            pub fn hash(ctx: @This(), key: struct { *Node, bool, bool }) u32 {
                 _ = ctx;
-                var h = std.hash.Fnv1a_64.init();
+                var h = std.hash.Fnv1a_32.init();
                 h.update(key.@"0".data);
                 const tmp: [2]u8 = .{ @as(u8, @intFromBool(key.@"1")), @as(u8, @intFromBool(key.@"2")) };
                 h.update(&tmp);
                 const final_hash = h.final();
-                //print("Hash: {d}\n", .{final_hash});
                 return final_hash;
             }
             pub fn eql(ctx: @This(), a: struct { *Node, bool, bool }, b: struct { *Node, bool, bool }) bool {
@@ -87,24 +86,29 @@ pub fn MemGraph() type {
         pub fn recursive_path_count(self: *Self, current_node: *Node, visited_dac: bool, visited_fft: bool) !usize {
             if (self.cache_map.get(.{ current_node, visited_dac, visited_fft })) |path_count| {
                 //print("Cache Hit!\n", .{});
+                //if (path_count != 0) {
+                //}
+                //print("{s} {d} {d} {d}\n", .{ current_node.data, @intFromBool(visited_dac), @intFromBool(visited_fft), path_count });
                 return path_count;
             }
             var fft = visited_fft;
-            var dac = visited_fft;
+            var dac = visited_dac;
             if (std.mem.eql(u8, current_node.data, "out")) {
                 var result: usize = 0;
-                if (visited_dac or visited_fft) {
-                    print("Found End\n", .{});
+                if (dac and fft) {
+                    //print("Found End\n", .{});
                     result = 1;
                 } else {
-                    print("No End\n", .{});
+                    //print("No End\n", .{});
                     result = 0;
                 }
                 try self.cache_map.put(.{ current_node, visited_dac, visited_fft }, result);
                 return result;
             } else if (std.mem.eql(u8, current_node.data, "fft")) {
+                //print("Found FFT\n", .{});
                 fft = true;
             } else if (std.mem.eql(u8, current_node.data, "dac")) {
+                //print("Found DAC\n", .{});
                 dac = true;
             }
             var count: usize = 0;
@@ -112,6 +116,7 @@ pub fn MemGraph() type {
                 count += try self.recursive_path_count(value, dac, fft);
             }
             try self.cache_map.put(.{ current_node, dac, fft }, count);
+            //print("{s} {d} {d} {d}\n", .{ current_node.data, @intFromBool(visited_dac), @intFromBool(visited_fft), count });
             return count;
         }
         pub fn reset_cache(self: *Self) !void {
